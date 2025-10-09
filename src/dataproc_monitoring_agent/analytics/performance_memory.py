@@ -20,6 +20,14 @@ class BaselineStats:
     p50_duration: float | None
     p95_duration: float | None
     avg_duration: float | None
+    p50_app_vcore_seconds: float | None
+    p95_app_vcore_seconds: float | None
+    avg_app_vcore_seconds: float | None
+    p50_app_memory_gb_seconds: float | None
+    p95_app_memory_gb_seconds: float | None
+    avg_app_memory_gb_seconds: float | None
+    avg_max_over_median_ratio: float | None
+    p95_task_duration_ms: float | None
     run_count: int
 
 
@@ -38,7 +46,11 @@ def load_baselines(
             job_id,
             job_type,
             cluster_name,
-            duration_seconds
+            duration_seconds,
+            SAFE_CAST(JSON_VALUE(job_metrics, '$.app.app_vcore_seconds') AS FLOAT64) AS app_vcore_seconds,
+            SAFE_CAST(JSON_VALUE(job_metrics, '$.app.app_memory_gb_seconds') AS FLOAT64) AS app_memory_gb_seconds,
+            SAFE_CAST(JSON_VALUE(job_metrics, '$.jobs[0].max_over_median_ratio') AS FLOAT64) AS max_over_median_ratio,
+            SAFE_CAST(JSON_VALUE(job_metrics, '$.jobs[0].p95_task_duration_ms') AS FLOAT64) AS p95_task_duration_ms
           FROM `{config.fully_qualified_table}`
           WHERE ingest_timestamp BETWEEN @window_start AND @as_of
             AND duration_seconds IS NOT NULL
@@ -50,6 +62,14 @@ def load_baselines(
           APPROX_QUANTILES(duration_seconds, 20)[OFFSET(10)] AS p50_duration,
           APPROX_QUANTILES(duration_seconds, 20)[OFFSET(18)] AS p95_duration,
           AVG(duration_seconds) AS avg_duration,
+          APPROX_QUANTILES(app_vcore_seconds, 20)[OFFSET(10)] AS p50_app_vcore_seconds,
+          APPROX_QUANTILES(app_vcore_seconds, 20)[OFFSET(18)] AS p95_app_vcore_seconds,
+          AVG(app_vcore_seconds) AS avg_app_vcore_seconds,
+          APPROX_QUANTILES(app_memory_gb_seconds, 20)[OFFSET(10)] AS p50_app_memory_gb_seconds,
+          APPROX_QUANTILES(app_memory_gb_seconds, 20)[OFFSET(18)] AS p95_app_memory_gb_seconds,
+          AVG(app_memory_gb_seconds) AS avg_app_memory_gb_seconds,
+          AVG(max_over_median_ratio) AS avg_max_over_median_ratio,
+          APPROX_QUANTILES(p95_task_duration_ms, 20)[OFFSET(18)] AS p95_task_duration_ms,
           COUNT(*) AS run_count
         FROM history
         GROUP BY job_id
@@ -80,6 +100,14 @@ def load_baselines(
             p50_duration=row.p50_duration,
             p95_duration=row.p95_duration,
             avg_duration=row.avg_duration,
+            p50_app_vcore_seconds=row.p50_app_vcore_seconds,
+            p95_app_vcore_seconds=row.p95_app_vcore_seconds,
+            avg_app_vcore_seconds=row.avg_app_vcore_seconds,
+            p50_app_memory_gb_seconds=row.p50_app_memory_gb_seconds,
+            p95_app_memory_gb_seconds=row.p95_app_memory_gb_seconds,
+            avg_app_memory_gb_seconds=row.avg_app_memory_gb_seconds,
+            avg_max_over_median_ratio=row.avg_max_over_median_ratio,
+            p95_task_duration_ms=row.p95_task_duration_ms,
             run_count=row.run_count,
         )
     return baselines
