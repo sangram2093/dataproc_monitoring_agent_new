@@ -133,7 +133,7 @@ def insert_daily_facts(
     *,
     records: Iterable[DataprocFact],
 ) -> None:
-    """Stream daily fact rows into BigQuery."""
+    """Load daily fact rows into BigQuery."""
 
     payload = [record.to_json() for record in records]
     if not payload:
