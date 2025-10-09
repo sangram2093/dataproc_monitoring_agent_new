@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import copy
 from typing import Any, Dict, List, Optional, Tuple
 
 from google.adk.tools.tool_context import ToolContext
@@ -196,13 +197,27 @@ def _build_fact(
     job_id = run_state.primary_job_id
     duration_seconds = run_state.duration_seconds
 
+    job_family = run_state.job_family or run_state.primary_job_id
+    run_identifier = run_state.run_identifier
+
+    metrics_payload = run_state.spark_event_metrics
+    if not isinstance(metrics_payload, dict):
+        metrics_payload = {}
+    else:
+        metrics_payload = copy.deepcopy(metrics_payload)
+    metadata_section = metrics_payload.setdefault("metadata", {})
+    metadata_section.setdefault("run_identifier", run_identifier)
+    metadata_section.setdefault("job_family", job_family)
+
+    cluster_profile = _summarize_cluster_profile(run_state.cluster_config_details)
+
     fact = DataprocFact(
         ingest_date=as_of.date().isoformat(),
         ingest_timestamp=as_of.isoformat(),
         project_id=config.project_id,
         region=config.region,
         cluster_name=run_state.cluster_name or "unknown",
-        job_id=job_id,
+        job_id=job_family or job_id,
         job_type="SPARK",
         job_state=run_state.status or "UNKNOWN",
         job_start_time=run_state.application_start_time,
@@ -214,8 +229,9 @@ def _build_fact(
         cluster_metrics={
             "cluster_config_details": run_state.cluster_config_details,
             "dataproc_cluster_uuid": run_state.dataproc_cluster_uuid,
+            "cluster_profile": cluster_profile,
         },
-        job_metrics=run_state.spark_event_metrics,
+        job_metrics=metrics_payload,
         driver_log_excerpt=run_state.log_location,
         yarn_log_excerpt=None,
         spark_event_snippet=_format_spark_event_snippet(
@@ -230,6 +246,9 @@ def _build_fact(
         baseline=baseline,
         spark_metrics=run_state.spark_event_metrics,
         cost_summary=run_state.cost_summary,
+        cluster_profile=cluster_profile,
+        job_family=job_family,
+        run_identifier=run_identifier,
     )
     has_issues = bool(anomaly_payload.get("has_issues")) if anomaly_payload else False
     fact.anomaly_flags = anomaly_payload or {}
@@ -300,3 +319,36 @@ def _format_metric_value(value: Any) -> Any:
     if isinstance(value, (int, float)):
         return f"{value:.2f}"
     return value
+
+
+def _summarize_cluster_profile(details: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(details, dict):
+        return {}
+
+    config = details.get("config") or {}
+    worker_cfg = config.get("workerConfig") or {}
+    secondary_cfg = config.get("secondaryWorkerConfig") or {}
+
+    primary_workers = _safe_int(worker_cfg.get("numInstances"))
+    secondary_workers = _safe_int(secondary_cfg.get("numInstances"))
+    total_workers = (primary_workers or 0) + (secondary_workers or 0)
+
+    profile = {
+        "primary_workers": primary_workers,
+        "secondary_workers": secondary_workers,
+        "total_workers": total_workers,
+        "primary_machine_type": worker_cfg.get("machineTypeUri"),
+        "secondary_machine_type": secondary_cfg.get("machineTypeUri"),
+        "autoscaling_enabled": bool(config.get("autoscalingConfig")),
+    }
+
+    return {key: value for key, value in profile.items() if value not in (None, "", [])}
+
+
+def _safe_int(value: Any) -> int | None:
+    try:
+        if value is None:
+            return None
+        return int(value)
+    except (TypeError, ValueError):
+        return None
