@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
+import re
 from typing import Any
 
 from google.api_core import exceptions
@@ -86,10 +87,10 @@ class SparkRunState:
 
     @property
     def primary_job_id(self) -> str:
-        for candidate in (self.spark_jobid, self.application_id, self.spark_taskid):
-            if candidate:
-                return candidate
-        return ""
+        family = self.job_family
+        if family:
+            return family
+        return self.run_identifier
 
     @property
     def duration_seconds(self) -> float | None:
@@ -130,6 +131,21 @@ class SparkRunState:
             "app_memory_gb_seconds": app.get("app_memory_gb_seconds"),
             "executor_peak": app.get("executor_peak"),
         }
+
+    @property
+    def job_family(self) -> str:
+        for candidate in (self.spark_jobid, self.spark_taskid, self.application_id):
+            normalized = _normalize_identifier(candidate)
+            if normalized:
+                return normalized
+        return ""
+
+    @property
+    def run_identifier(self) -> str:
+        for candidate in (self.spark_jobid, self.application_id, self.spark_taskid):
+            if candidate:
+                return candidate
+        return ""
 
 
 def fetch_run_state_records(
@@ -240,3 +256,10 @@ def _to_query_timestamp(moment: datetime) -> str:
     if not moment.tzinfo:
         moment = moment.replace(tzinfo=timezone.utc)
     return moment.astimezone(timezone.utc).isoformat()
+_JOB_SUFFIX_PATTERN = re.compile(r"_[0-9a-f]{6,}$", re.IGNORECASE)
+
+
+def _normalize_identifier(value: str | None) -> str:
+    if not value:
+        return ""
+    return _JOB_SUFFIX_PATTERN.sub("", value)
