@@ -10,7 +10,7 @@ from typing import Iterable
 from google.api_core import exceptions
 from google.api_core.exceptions import NotFound, Forbidden
 from google.cloud import bigquery
-from google.cloud.bigquery.retry import DEFAULT_RETRY
+from google.cloud.bigquery import LoadJobConfig
 
 from ..config.settings import MonitoringConfig
 
@@ -125,8 +125,7 @@ def ensure_performance_table(config: MonitoringConfig) -> None:
         ) from exc
 
 
-_STREAMING_BATCH_SIZE = 500
-_STREAMING_RETRY = DEFAULT_RETRY.with_deadline(60.0)
+_LOAD_JOB_TIMEOUT = 300.0
 
 
 def insert_daily_facts(
@@ -146,37 +145,24 @@ def insert_daily_facts(
     client = bigquery.Client(project=config.project_id)
     table_id = config.fully_qualified_table
 
-    for start_index in range(0, len(payload), _STREAMING_BATCH_SIZE):
-        batch = payload[start_index : start_index + _STREAMING_BATCH_SIZE]
-        try:
-            errors = client.insert_rows_json(
-                table_id,
-                batch,
-                retry=_STREAMING_RETRY,
-                timeout=120.0,
-            )
-        except exceptions.RetryError as exc:
-            raise RuntimeError(
-                "Timed out streaming rows into {table}: {error}".format(
-                    table=table_id,
-                    error=exc,
-                )
-            ) from exc
-        except exceptions.GoogleAPICallError as exc:
-            raise RuntimeError(
-                "Failed to insert rows into {table}: {error}".format(
-                    table=table_id,
-                    error=exc,
-                )
-            ) from exc
+    job_config = LoadJobConfig()
+    job_config.write_disposition = "WRITE_APPEND"
 
-        if errors:
-            raise RuntimeError(
-                "Failed to insert rows into {table}: {errors}".format(
-                    table=table_id,
-                    errors=errors,
-                )
+    try:
+        load_job = client.load_table_from_json(
+            payload,
+            table_id,
+            job_config=job_config,
+            location=config.bq_location,
+        )
+        load_job.result(timeout=_LOAD_JOB_TIMEOUT)
+    except (exceptions.GoogleAPICallError, exceptions.RetryError) as exc:
+        raise RuntimeError(
+            "Failed to load rows into {table}: {error}".format(
+                table=table_id,
+                error=exc,
             )
+        ) from exc
 
 
 def utc_now() -> datetime:
