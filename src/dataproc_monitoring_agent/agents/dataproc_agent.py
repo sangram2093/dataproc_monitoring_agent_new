@@ -28,11 +28,11 @@ def build_dataproc_monitoring_agent(model: str | None = None) -> Agent:
 
     memory_builder = Agent(
         name="performance_memory_builder",
-        description="Persists Spark job observations into BigQuery and tags anomalies.",
+        description="Persists Spark job observations into BigQuery, compares against historical baselines, and tags anomalies.",
         instruction=(
             "After signals are collected, call `build_performance_memory` to compute daily facts, "
-            "compare against baselines, and persist to BigQuery. Mention cost metrics and whether "
-            "rows were written or if dry-run mode was active."),
+            "compare against baselines, and persist to BigQuery. Mention cost metrics, task skew, "
+            "cluster right-sizing insights, and whether rows were written or if dry-run mode was active."),
         tools=[FunctionTool(dataproc_pipeline.build_performance_memory)],
     )
 
