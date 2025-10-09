@@ -29,19 +29,51 @@ def build_status_report(facts: Iterable[DataprocFact]) -> str:
     )
 
     if anomalies:
-        lines.append("")
-        lines.append(f"⚠️  {len(anomalies)} regression(s) detected:")
+        severity_rank = {"critical": 0, "warning": 1, "info": 2, "default": 3}
+        grouped: dict[str, dict[str, object]] = {}
         for fact in anomalies:
             findings = fact.anomaly_flags.get("findings", [])
             if not findings:
                 continue
-            top = findings[0]
+            job_family = fact.anomaly_flags.get("job_family") or fact.job_id
+            for finding in findings:
+                severity = finding.get("severity", "default")
+                rank = severity_rank.get(severity, severity_rank["default"])
+                current = grouped.get(job_family)
+                if current is None or rank < current["rank"]:
+                    grouped[job_family] = {
+                        "rank": rank,
+                        "severity": severity,
+                        "finding": finding,
+                        "fact": fact,
+                    }
+
+        lines.append("")
+        lines.append(f"⚠️  {len(grouped)} regression(s) detected across logical jobs:")
+        for job_family, payload in sorted(grouped.items(), key=lambda item: item[1]["rank"]):
+            fact = payload["fact"]
+            finding = payload["finding"]
+            run_identifier = fact.anomaly_flags.get("run_identifier") or fact.job_id
             lines.append(
-                f"- {fact.job_id} on cluster {fact.cluster_name}: {top['message']}"
+                f"- {job_family} (latest run {run_identifier}) on cluster {fact.cluster_name}: {finding['message']}"
             )
     else:
         lines.append("")
         lines.append("No runtime regressions detected against current baselines.")
+
+    if anomalies:
+        lines.append("")
+        lines.append("Suggested actions:")
+        action_lines_added = False
+        for job_family, payload in sorted(grouped.items(), key=lambda item: item[1]["rank"]):
+            fact = payload["fact"]
+            finding = payload["finding"]
+            action_lines_added = True
+            lines.append(
+                f"- {job_family}: {finding['message']}"
+            )
+        if not action_lines_added:
+            lines.append("- Monitor upcoming runs; no actionable regressions flagged.")
 
     lines.append("")
     lines.append("Recent job highlights:")
@@ -49,8 +81,9 @@ def build_status_report(facts: Iterable[DataprocFact]) -> str:
         duration = "n/a"
         if fact.duration_seconds:
             duration = f"{fact.duration_seconds:.1f}s"
+        run_identifier = fact.anomaly_flags.get("run_identifier") or fact.job_id
         lines.append(
-            f"- {fact.job_id} ({fact.job_type}) state={fact.job_state} duration={duration}"
+            f"- {run_identifier} ({fact.job_type}) state={fact.job_state} duration={duration}"
         )
         cost_summary = fact.anomaly_flags.get("cost_summary", {})
         vcores = cost_summary.get("app_vcore_seconds")
