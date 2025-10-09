@@ -6,7 +6,8 @@ This project packages a Dataproc-focused agent built with the Google Agent Devel
 
 - **Signal collection** – queries the Composer-populated `cag_run_state` BigQuery table to retrieve Spark application telemetry (cluster configs, driver log locations, event metrics).
 - **Performance memory** – writes daily fact rows to BigQuery with runtime metrics, cost indicators (vcore/memory seconds), and anomaly flags.
-- **Baseline analysis** – loads trailing P50/P95 duration benchmarks and flags runtime regressions or task skew regressions.
+- **Baseline analysis** – loads trailing P50/P95 duration and cost benchmarks, then flags runtime, compute-cost, and task-skew regressions per logical Spark job family.
+- **Right-sizing insights** – reviews executor usage versus provisioned workers to call out idle clusters or capacity limits.
 - **Agentic workflow** – orchestrator agent delegates to specialist sub-agents (collector → memory builder → reporter) using ADK tooling.
 
 ## Repository layout
@@ -114,3 +115,4 @@ pytest
 - The agent trusts the `cag_run_state` dataset as ground truth; ensure your Composer pipeline writes the row before Dataproc clusters are torn down.
 - Cost fields (vcore seconds, memory seconds) flow straight from `spark_event_metrics`; adjust your upstream JSON schema if you need additional signals.
 - Legacy GCP service clients remain in `src/dataproc_monitoring_agent/services/` for backward compatibility but are no longer invoked by the default pipeline.
+- Logical Spark job families are inferred by trimming the run-specific suffix from `spark_jobid`/`spark_taskid`, so baseline comparisons span multiple executions of the same job definition.
