@@ -10,6 +10,7 @@ from typing import Iterable
 from google.api_core import exceptions
 from google.api_core.exceptions import NotFound, Forbidden
 from google.cloud import bigquery
+from google.cloud.bigquery.retry import DEFAULT_RETRY
 
 from ..config.settings import MonitoringConfig
 
@@ -124,6 +125,10 @@ def ensure_performance_table(config: MonitoringConfig) -> None:
         ) from exc
 
 
+_STREAMING_BATCH_SIZE = 500
+_STREAMING_RETRY = DEFAULT_RETRY.with_deadline(60.0)
+
+
 def insert_daily_facts(
     config: MonitoringConfig,
     *,
@@ -140,9 +145,38 @@ def insert_daily_facts(
 
     client = bigquery.Client(project=config.project_id)
     table_id = config.fully_qualified_table
-    errors = client.insert_rows_json(table_id, payload)
-    if errors:
-        raise RuntimeError(f"Failed to insert rows into {table_id}: {errors}")
+
+    for start_index in range(0, len(payload), _STREAMING_BATCH_SIZE):
+        batch = payload[start_index : start_index + _STREAMING_BATCH_SIZE]
+        try:
+            errors = client.insert_rows_json(
+                table_id,
+                batch,
+                retry=_STREAMING_RETRY,
+                timeout=120.0,
+            )
+        except exceptions.RetryError as exc:
+            raise RuntimeError(
+                "Timed out streaming rows into {table}: {error}".format(
+                    table=table_id,
+                    error=exc,
+                )
+            ) from exc
+        except exceptions.GoogleAPICallError as exc:
+            raise RuntimeError(
+                "Failed to insert rows into {table}: {error}".format(
+                    table=table_id,
+                    error=exc,
+                )
+            ) from exc
+
+        if errors:
+            raise RuntimeError(
+                "Failed to insert rows into {table}: {errors}".format(
+                    table=table_id,
+                    errors=errors,
+                )
+            )
 
 
 def utc_now() -> datetime:
