@@ -54,8 +54,17 @@ def build_status_report(facts: Iterable[DataprocFact]) -> str:
             fact = payload["fact"]
             finding = payload["finding"]
             run_identifier = fact.anomaly_flags.get("run_identifier") or fact.job_id
+            baseline = fact.anomaly_flags.get("baseline_reference") or {}
+            baseline_snippet = ""
+            if baseline.get("p50_duration") and baseline.get("run_count"):
+                baseline_snippet = (
+                    " (baseline median {median:.1f}s over {count} runs)"
+                ).format(
+                    median=baseline["p50_duration"],
+                    count=baseline["run_count"],
+                )
             lines.append(
-                f"- {job_family} (latest run {run_identifier}) on cluster {fact.cluster_name}: {finding['message']}"
+                f"- {job_family} (latest run {run_identifier}) on cluster {fact.cluster_name}: {finding['message']}{baseline_snippet}"
             )
     else:
         lines.append("")
