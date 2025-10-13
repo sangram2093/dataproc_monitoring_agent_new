@@ -64,15 +64,29 @@ def build_status_report(facts: Iterable[DataprocFact]) -> str:
     if anomalies:
         lines.append("")
         lines.append("Suggested actions:")
-        action_lines_added = False
+        raw_actions: list[tuple[str, str]] = []
         for job_family, payload in sorted(grouped.items(), key=lambda item: item[1]["rank"]):
             fact = payload["fact"]
             finding = payload["finding"]
-            action_lines_added = True
-            lines.append(
-                f"- {job_family}: {finding['message']}"
-            )
-        if not action_lines_added:
+            action_text = finding.get("action")
+            if not action_text and fact.anomaly_flags.get("recommendations"):
+                action_text = fact.anomaly_flags["recommendations"][0]
+            if action_text:
+                raw_actions.append((job_family, action_text))
+        for fact in anomalies:
+            family = fact.anomaly_flags.get("job_family") or fact.job_id
+            for recommendation in fact.anomaly_flags.get("recommendations", []):
+                raw_actions.append((family, recommendation))
+
+        if raw_actions:
+            seen: set[str] = set()
+            for family, action in raw_actions:
+                key = f"{family}::{action}"
+                if key in seen:
+                    continue
+                seen.add(key)
+                lines.append(f"- {family}: {action}")
+        else:
             lines.append("- Monitor upcoming runs; no actionable regressions flagged.")
 
     lines.append("")
