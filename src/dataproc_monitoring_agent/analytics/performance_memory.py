@@ -41,7 +41,7 @@ def load_baselines(
 
     client = bigquery.Client(project=config.project_id)
     query = f"""
-        WITH history AS (
+        WITH raw_history AS (
           SELECT
             job_id,
             job_type,
@@ -55,8 +55,25 @@ def load_baselines(
           WHERE ingest_timestamp BETWEEN @window_start AND @as_of
             AND duration_seconds IS NOT NULL
         )
+        , history AS (
+          SELECT
+            job_id,
+            CASE
+              WHEN REGEXP_REPLACE(job_id, r'_[0-9a-f]{6,}$', '') != ''
+                THEN REGEXP_REPLACE(job_id, r'_[0-9a-f]{6,}$', '')
+              ELSE job_id
+            END AS logical_job_id,
+            job_type,
+            cluster_name,
+            duration_seconds,
+            app_vcore_seconds,
+            app_memory_gb_seconds,
+            max_over_median_ratio,
+            p95_task_duration_ms
+          FROM raw_history
+        )
         SELECT
-          job_id,
+          logical_job_id AS job_id,
           ANY_VALUE(job_type) AS job_type,
           ANY_VALUE(cluster_name) AS cluster_name,
           APPROX_QUANTILES(duration_seconds, 20)[OFFSET(10)] AS p50_duration,
@@ -72,7 +89,7 @@ def load_baselines(
           APPROX_QUANTILES(p95_task_duration_ms, 20)[OFFSET(18)] AS p95_task_duration_ms,
           COUNT(*) AS run_count
         FROM history
-        GROUP BY job_id
+        GROUP BY logical_job_id
     """
 
     params = [
