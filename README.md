@@ -8,6 +8,7 @@ This project packages a Dataproc-focused agent built with the Google Agent Devel
 - **Performance memory** – writes daily fact rows to BigQuery with runtime metrics, cost indicators (vcore/memory seconds), and anomaly flags.
 - **Baseline analysis** – loads trailing P50/P95 duration and cost benchmarks, then flags runtime, compute-cost, and task-skew regressions per logical Spark job family.
 - **Right-sizing insights** – reviews executor usage versus provisioned workers to call out idle clusters or capacity limits.
+- **Actionable findings** – each detected regression includes baseline deltas, the impacted stage/job context, and concrete follow-up recommendations surfaced in reports and anomaly flags.
 - **Agentic workflow** – orchestrator agent delegates to specialist sub-agents (collector → memory builder → reporter) using ADK tooling.
 
 ## Repository layout
