@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 from datetime import datetime
+import math
 import copy
+from collections import defaultdict
 from typing import Any, Dict, List, Optional, Tuple
 
 from google.adk.tools.tool_context import ToolContext
 
 from ..analytics.anomaly_detection import synthesize_anomaly_flags
-from ..analytics.performance_memory import load_baselines
+from ..analytics.performance_memory import load_baselines, BaselineStats
 from ..config.settings import MonitoringConfig, load_config
 from ..reporting.report_builder import build_status_report
 from ..repositories.bigquery_repository import (
@@ -109,6 +111,7 @@ def build_performance_memory(
         }
 
     run_states = [SparkRunState.from_payload(payload) for payload in run_payloads]
+    run_states.sort(key=_run_state_sort_key)
 
     ensure_performance_table(config)
 
@@ -119,9 +122,26 @@ def build_performance_memory(
         trailing_window=config.baseline_window,
     )
 
+    local_history: dict[str, List[dict[str, Any]]] = defaultdict(list)
+    local_baseline_families: set[str] = set()
+
     facts: list[DataprocFact] = []
     has_anomaly = False
     for run_state in run_states:
+        job_family = run_state.job_family or run_state.primary_job_id
+        job_key = job_family or run_state.primary_job_id
+        history_key = job_family or job_key
+
+        if job_key:
+            prior_samples = local_history[history_key]
+            if baselines.get(job_key) is None and prior_samples:
+                baselines[job_key] = _build_local_baseline(
+                    history_key,
+                    run_state.cluster_name or "unknown",
+                    prior_samples,
+                )
+                local_baseline_families.add(job_key)
+
         fact, fact_has_issue = _build_fact(
             config=config,
             as_of=now,
@@ -131,6 +151,18 @@ def build_performance_memory(
         if fact_has_issue:
             has_anomaly = True
         facts.append(fact)
+
+        if job_key:
+            sample = _build_local_sample(fact, run_state)
+            if sample:
+                local_history[history_key].append(sample)
+                if baselines.get(job_key) is None or job_key in local_baseline_families:
+                    baselines[job_key] = _build_local_baseline(
+                        history_key,
+                        fact.cluster_name,
+                        local_history[history_key],
+                    )
+                    local_baseline_families.add(job_key)
 
     insert_daily_facts(config, records=facts)
 
@@ -321,6 +353,100 @@ def _format_metric_value(value: Any) -> Any:
     return value
 
 
+def _run_state_sort_key(run_state: SparkRunState) -> tuple[str, str, str]:
+    primary = run_state.application_start_time or run_state.application_end_time or run_state.run_date or ""
+    secondary = run_state.application_end_time or run_state.run_date or ""
+    return (primary, secondary, run_state.run_identifier)
+
+
+def _build_local_sample(fact: DataprocFact, run_state: SparkRunState) -> dict[str, Any]:
+    cost_summary = run_state.cost_summary
+    job_metrics = _extract_job_metric_sample(run_state.spark_event_metrics)
+    sample = {
+        "duration": fact.duration_seconds,
+        "vcores": _safe_float(cost_summary.get("app_vcore_seconds")),
+        "memory": _safe_float(cost_summary.get("app_memory_gb_seconds")),
+        "ratio": _safe_float(job_metrics.get("max_over_median_ratio")),
+        "p95_task_duration_ms": _safe_float(job_metrics.get("p95_task_duration_ms")),
+        "job_type": fact.job_type,
+    }
+    has_measure = any(
+        sample.get(field) is not None
+        for field in ("duration", "vcores", "memory", "ratio", "p95_task_duration_ms")
+    )
+    if not has_measure:
+        return {}
+    return sample
+
+
+def _extract_job_metric_sample(metrics: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(metrics, dict):
+        return {}
+    jobs = metrics.get("jobs")
+    if not isinstance(jobs, list):
+        return {}
+    for job in jobs:
+        if not isinstance(job, dict):
+            continue
+        return {
+            "max_over_median_ratio": job.get("max_over_median_ratio"),
+            "p95_task_duration_ms": job.get("p95_task_duration_ms"),
+        }
+    return {}
+
+
+def _build_local_baseline(
+    job_family: str,
+    cluster_name: str,
+    samples: List[dict[str, Any]],
+) -> BaselineStats:
+    durations = [s.get("duration") for s in samples if s.get("duration") is not None]
+    vcores = [s.get("vcores") for s in samples if s.get("vcores") is not None]
+    memories = [s.get("memory") for s in samples if s.get("memory") is not None]
+    ratios = [s.get("ratio") for s in samples if s.get("ratio") is not None]
+    p95_values = [s.get("p95_task_duration_ms") for s in samples if s.get("p95_task_duration_ms") is not None]
+    job_type = next((s.get("job_type") for s in reversed(samples) if s.get("job_type")), "SPARK")
+
+    return BaselineStats(
+        job_id=job_family,
+        job_type=job_type,
+        cluster_name=cluster_name,
+        p50_duration=_quantile(durations, 0.5),
+        p95_duration=_quantile(durations, 0.95),
+        avg_duration=_average(durations),
+        p50_app_vcore_seconds=_quantile(vcores, 0.5),
+        p95_app_vcore_seconds=_quantile(vcores, 0.95),
+        avg_app_vcore_seconds=_average(vcores),
+        p50_app_memory_gb_seconds=_quantile(memories, 0.5),
+        p95_app_memory_gb_seconds=_quantile(memories, 0.95),
+        avg_app_memory_gb_seconds=_average(memories),
+        avg_max_over_median_ratio=_average(ratios),
+        p95_task_duration_ms=_quantile(p95_values, 0.95),
+        run_count=len(samples),
+    )
+
+
+def _quantile(values: List[float], percentile: float) -> float | None:
+    if not values:
+        return None
+    sorted_vals = sorted(values)
+    if len(sorted_vals) == 1:
+        return sorted_vals[0]
+    position = (len(sorted_vals) - 1) * percentile
+    lower = math.floor(position)
+    upper = math.ceil(position)
+    if lower == upper:
+        return sorted_vals[lower]
+    weight = position - lower
+    return sorted_vals[lower] + (sorted_vals[upper] - sorted_vals[lower]) * weight
+
+
+def _average(values: List[float]) -> float | None:
+    if not values:
+        return None
+    return sum(values) / len(values)
+
+
 def _summarize_cluster_profile(details: dict[str, Any] | None) -> dict[str, Any]:
     if not isinstance(details, dict):
         return {}
@@ -343,6 +469,15 @@ def _summarize_cluster_profile(details: dict[str, Any] | None) -> dict[str, Any]
     }
 
     return {key: value for key, value in profile.items() if value not in (None, "", [])}
+
+
+def _safe_float(value: Any) -> float | None:
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _safe_int(value: Any) -> int | None:
